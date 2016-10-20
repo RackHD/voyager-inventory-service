@@ -1,0 +1,117 @@
+jobs:
+- name: unit
+  plan:
+  - aggregate:
+    - get: voyager-inventory-service
+      trigger: true
+    - get: concourse-whale
+  - task: unit
+    image: concourse-whale
+    config:
+      platform: linux
+      inputs:
+      - name: voyager-inventory-service
+      params:
+        GITHUB_USER:        {{github_username}}
+        GITHUB_PASSWORD:    {{github_password}}
+      run:
+        path: voyager-inventory-service/ci/tasks/unit.sh
+
+- name: integration
+  plan:
+  - aggregate:
+    - put: it-env
+      params: {acquire: true}
+    - get: voyager-inventory-service
+      trigger: true
+      passed: [unit]
+    - get: concourse-whale
+  - task: integration
+    image: concourse-whale
+    config:
+      platform: linux
+      inputs:
+      - name: voyager-inventory-service
+      - name: it-env
+      params:
+        GITHUB_USER:        {{github_username}}
+        GITHUB_PASSWORD:    {{github_password}}
+        INTEGRATION_VM_USER:      {{integration_vm_user}}
+        INTEGRATION_VM_SSH_KEY:   {{integration_vm_ssh_key}}
+      run:
+        path: voyager-inventory-service/ci/tasks/integration.sh
+    ensure:
+      put: it-env
+      params: {release: it-env}
+
+- name: build-docker
+  serial: true
+  plan:
+  - aggregate:
+    - get: version
+      params: {bump: patch}
+    - get: concourse-whale
+    - get: voyager-inventory-service
+      trigger: true
+      passed: [integration]
+  - task: build
+    image: concourse-whale
+    config:
+      platform: linux
+      inputs:
+      - name: voyager-inventory-service
+      - name: version
+      outputs:
+      - name: build
+      params:
+        GITHUB_USER:        {{github_username}}
+        GITHUB_PASSWORD:    {{github_password}}
+      run:
+        path: voyager-inventory-service/ci/tasks/build-candidate.sh
+  - put: docker-voyager-inventory-service
+    params:
+      build: build
+      tag: version/version
+  - put: version
+    params: {file: version/version}
+
+resources:
+- name: voyager-inventory-service
+  type: git
+  default-github: &github-secrets
+    username: {{github_username}}
+    password: {{github_password}}
+    skip_ssl_verification: true
+  source:
+    uri: https://github.com/RackHD/voyager-inventory-service.git
+    branch: master
+    <<: *github-secrets
+
+- name: version
+  type: semver
+  source:
+    driver: git
+    uri: https://github.com/RackHD/voyager-inventory-service.git
+    branch: version
+    file: version
+    <<: *github-secrets
+
+- name: it-env
+  type: pool
+  source:
+    uri: https://github.com/RackHD/voyager-release.git
+    branch: locks
+    pool: integration
+    <<: *github-secrets
+
+- name: concourse-whale
+  type: docker-image
+  source:
+    repository: {{concourse_whale_repository}}
+    insecure_registries: [{{docker_insecure_registries}}]
+
+- name: docker-voyager-inventory-service
+  type: docker-image
+  source:
+    repository: {{docker_inventory_service_private_repository}}
+    insecure_registries: [{{docker_insecure_registries}}]
